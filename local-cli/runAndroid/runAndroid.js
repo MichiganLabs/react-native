@@ -13,7 +13,6 @@ const chalk = require('chalk');
 const child_process = require('child_process');
 const fs = require('fs');
 const isPackagerRunning = require('../util/isPackagerRunning');
-const findReactNativeScripts = require('../util/findReactNativeScripts');
 const isString = require('lodash/isString');
 const path = require('path');
 const Promise = require('promise');
@@ -28,16 +27,7 @@ function checkAndroid(root) {
  */
 function runAndroid(argv, config, args) {
   if (!checkAndroid(args.root)) {
-    const reactNativeScriptsPath = findReactNativeScripts();
-    if (reactNativeScriptsPath) {
-      child_process.spawnSync(
-        reactNativeScriptsPath,
-        ['android'].concat(process.argv.slice(1)),
-        {stdio: 'inherit'}
-      );
-    } else {
-      console.log(chalk.red('Android project not found. Maybe run react-native android first?'));
-    }
+    console.log(chalk.red('Android project not found. Maybe run react-native android first?'));
     return;
   }
 
@@ -45,7 +35,7 @@ function runAndroid(argv, config, args) {
     return buildAndRun(args);
   }
 
-  return isPackagerRunning(args.port).then(result => {
+  return isPackagerRunning().then(result => {
     if (result === 'running') {
       console.log(chalk.bold('JS server already running.'));
     } else if (result === 'unrecognized') {
@@ -53,7 +43,7 @@ function runAndroid(argv, config, args) {
     } else {
       // result == 'not_running'
       console.log(chalk.bold('Starting JS server...'));
-      startServerInNewWindow(args.port);
+      startServerInNewWindow();
     }
     return buildAndRun(args);
   });
@@ -66,10 +56,10 @@ function getAdbPath() {
 }
 
 // Runs ADB reverse tcp:8081 tcp:8081 to allow loading the jsbundle from the packager
-function tryRunAdbReverse(packagerPort, device) {
+function tryRunAdbReverse(device) {
   try {
     const adbPath = getAdbPath();
-    const adbArgs = ['reverse', `tcp:${packagerPort}`, `tcp:${packagerPort}`];
+    const adbArgs = ['reverse', 'tcp:8081', 'tcp:8081'];
 
     // If a device is specified then tell adb to use it
     if (device) {
@@ -88,16 +78,6 @@ function tryRunAdbReverse(packagerPort, device) {
   }
 }
 
-function getPackageNameWithSuffix(appId, appIdSuffix, packageName) {
-  if (appId) {
-    return appId;
-  } else if (appIdSuffix) {
-    return packageName + '.' + appIdSuffix;
-  }
-
-  return packageName;
-}
-
 // Builds the app and runs it on a connected emulator / device.
 function buildAndRun(args) {
   process.chdir(path.join(args.root, 'android'));
@@ -105,31 +85,24 @@ function buildAndRun(args) {
     ? 'gradlew.bat'
     : './gradlew';
 
-  const packageName = fs.readFileSync(
-      `${args.appFolder}/src/main/AndroidManifest.xml`,
-      'utf8'
-    ).match(/package="(.+?)"/)[1];
-
-  const packageNameWithSuffix = getPackageNameWithSuffix(args.appId, args.appIdSuffix, packageName);
-
   const adbPath = getAdbPath();
   if (args.deviceId) {
     if (isString(args.deviceId)) {
-        runOnSpecificDevice(args, cmd, packageNameWithSuffix, packageName, adbPath);
+        runOnSpecificDevice(args, cmd, adbPath);
     } else {
       console.log(chalk.red('Argument missing for parameter --deviceId'));
     }
   } else {
-    runOnAllDevices(args, cmd, packageNameWithSuffix, packageName, adbPath);
+    runOnAllDevices(args, cmd, adbPath);
   }
 }
 
-function runOnSpecificDevice(args, gradlew, packageNameWithSuffix, packageName, adbPath) {
+function runOnSpecificDevice(args, gradlew, adbPath) {
   let devices = adb.getDevices();
   if (devices && devices.length > 0) {
     if (devices.indexOf(args.deviceId) !== -1) {
       buildApk(gradlew);
-      installAndLaunchOnDevice(args, args.deviceId, packageNameWithSuffix, packageName, adbPath);
+      installAndLaunchOnDevice(args, args.deviceId, adbPath);
     } else {
       console.log('Could not find device with the id: "' + args.deviceId + '".');
       console.log('Choose one of the following:');
@@ -155,7 +128,7 @@ function buildApk(gradlew) {
 
 function tryInstallAppOnDevice(args, device) {
   try {
-    const pathToApk = `${args.appFolder}/build/outputs/apk/${args.appFolder}-debug.apk`;
+    const pathToApk = 'app/build/outputs/apk/app-debug.apk';
     const adbPath = getAdbPath();
     const adbArgs = ['-s', device, 'install', pathToApk];
     console.log(chalk.bold(
@@ -172,9 +145,10 @@ function tryInstallAppOnDevice(args, device) {
   }
 }
 
-function tryLaunchAppOnDevice(device, packageNameWithSuffix, packageName, adbPath, mainActivity) {
+function tryLaunchAppOnDevice(args, device, adbPath) {
   try {
-    const adbArgs = ['-s', device, 'shell', 'am', 'start', '-n', packageNameWithSuffix + '/' + packageName + '.' + mainActivity];
+    const activityClass = getActivityClass(args);
+    const adbArgs = ['-s', device, 'shell', 'am', 'start', '-n', activityClass];
     console.log(chalk.bold(
       `Starting the app on ${device} (${adbPath} ${adbArgs.join(' ')})...`
     ));
@@ -186,13 +160,13 @@ function tryLaunchAppOnDevice(device, packageNameWithSuffix, packageName, adbPat
   }
 }
 
-function installAndLaunchOnDevice(args, selectedDevice, packageNameWithSuffix, packageName, adbPath) {
-  tryRunAdbReverse(args.port, selectedDevice);
+function installAndLaunchOnDevice(args, selectedDevice, adbPath) {
+  tryRunAdbReverse(selectedDevice);
   tryInstallAppOnDevice(args, selectedDevice);
-  tryLaunchAppOnDevice(selectedDevice, packageNameWithSuffix, packageName, adbPath, args.mainActivity);
+  tryLaunchAppOnDevice(args, selectedDevice, adbPath);
 }
 
-function runOnAllDevices(args, cmd, packageNameWithSuffix, packageName, adbPath){
+function runOnAllDevices(args, cmd, adbPath){
   try {
     const gradleArgs = [];
     if (args.variant) {
@@ -226,7 +200,7 @@ function runOnAllDevices(args, cmd, packageNameWithSuffix, packageName, adbPath)
       'Could not install the app on the device, read the error above for details.\n' +
       'Make sure you have an Android emulator running or a device connected and have\n' +
       'set up your Android development environment:\n' +
-      'https://facebook.github.io/react-native/docs/getting-started.html'
+      'https://facebook.github.io/react-native/docs/android-setup.html'
     ));
     // stderr is automatically piped from the gradle process, so the user
     // should see the error already, there is no need to do
@@ -236,15 +210,17 @@ function runOnAllDevices(args, cmd, packageNameWithSuffix, packageName, adbPath)
     const devices = adb.getDevices();
     if (devices && devices.length > 0) {
       devices.forEach((device) => {
-        tryRunAdbReverse(args.port, device);
-        tryLaunchAppOnDevice(device, packageNameWithSuffix, packageName, adbPath, args.mainActivity);
+        tryRunAdbReverse(device);
+        tryLaunchAppOnDevice(args, device,  adbPath);
       });
     } else {
       try {
         // If we cannot execute based on adb devices output, fall back to
         // shell am start
+
+        const activityClass = getActivityClass(args);
         const fallbackAdbArgs = [
-          'shell', 'am', 'start', '-n', packageNameWithSuffix + '/' + packageName + '.MainActivity'
+          'shell', 'am', 'start', '-n', activityClass
         ];
         console.log(chalk.bold(
           `Starting the app (${adbPath} ${fallbackAdbArgs.join(' ')}...`
@@ -262,42 +238,137 @@ function runOnAllDevices(args, cmd, packageNameWithSuffix, packageName, adbPath)
     }
 }
 
-function startServerInNewWindow(port) {
+function startServerInNewWindow() {
+  const yargV = require('yargs').argv;
   const scriptFile = /^win/.test(process.platform) ?
     'launchPackager.bat' :
     'launchPackager.command';
-  const scriptsDir = path.resolve(__dirname, '..', '..', 'scripts');
-  const launchPackagerScript = path.resolve(scriptsDir, scriptFile);
-  const procConfig = {cwd: scriptsDir};
-  const terminal = process.env.REACT_TERMINAL;
-
-  // setup the .packager.env file to ensure the packager starts on the right port
-  const packagerEnvFile = path.join(__dirname, '..', '..', 'scripts', '.packager.env');
-  const content = `export RCT_METRO_PORT=${port}`;
-  // ensure we overwrite file by passing the 'w' flag
-  fs.writeFileSync(packagerEnvFile, content, {encoding: 'utf8', flag: 'w'});
+  const packagerDir = path.resolve(__dirname, '..', '..', 'packager');
+  const launchPackagerScript = path.resolve(packagerDir, scriptFile);
+  const procConfig = {cwd: packagerDir};
 
   if (process.platform === 'darwin') {
-    if (terminal) {
-      return child_process.spawnSync('open', ['-a', terminal, launchPackagerScript], procConfig);
+    if (yargV.open) {
+      return child_process.spawnSync('open', ['-a', yargV.open, launchPackagerScript], procConfig);
     }
     return child_process.spawnSync('open', [launchPackagerScript], procConfig);
 
   } else if (process.platform === 'linux') {
     procConfig.detached = true;
-    if (terminal){
-      return child_process.spawn(terminal, ['-e', 'sh ' + launchPackagerScript], procConfig);
+    if (yargV.open){
+      return child_process.spawn(yargV.open,['-e', 'sh', launchPackagerScript], procConfig);
     }
     return child_process.spawn('sh', [launchPackagerScript], procConfig);
 
   } else if (/^win/.test(process.platform)) {
     procConfig.detached = true;
     procConfig.stdio = 'ignore';
-    return child_process.spawn('cmd.exe', ['/C', launchPackagerScript], procConfig);
+    return child_process.spawn('cmd.exe', ['/C', 'start', launchPackagerScript], procConfig);
   } else {
     console.log(chalk.red(`Cannot start the packager. Unknown platform ${process.platform}`));
   }
 }
+
+function findPreviousTerm(content, endPos) {
+  while (content[endPos] === ' ') {
+    --endPos;
+  }
+  const regex = new RegExp('\\w');
+  const word = [];
+  while (regex.exec(content[endPos])) {
+    word.push(content[endPos]);
+    --endPos;
+  }
+  return word.reverse().join('');
+}
+
+function findBuildTypes(filePath) {
+  // Read the gradle file and get list of buildTypes defined for the project.
+  const content = fs.readFileSync(filePath, 'utf8');
+  const regex = new RegExp('buildType\\s+{', 'ig');
+  const buildTypes = ['debug', 'release'];
+  const match = regex.exec(content);
+  if (!match) {
+    return buildTypes;
+  }
+  const buildTypeStartPos = regex.lastIndex;
+  let counter = 1;
+  let pos = buildTypeStartPos + 1;
+  while (counter > 0) {
+    if (content[pos] === '{') {
+      counter += 1;
+      if (counter === 2) {
+        const previousTerm = findPreviousTerm(content, pos - 1);
+        if (buildTypes.indexOf(previousTerm) === -1) {
+          buildTypes.push(previousTerm);
+        }
+      }
+    } else if (content[pos] === '}') {
+      --counter;
+    }
+    ++pos;
+  }
+  return buildTypes;
+}
+
+function splitVariant(gradleFilePath, variant) {
+  // Split the variant into buildType and flavor
+  const buildTypes = findBuildTypes(gradleFilePath, 'buildTypes', ['debug', 'release']);
+  const regexp = new RegExp(buildTypes.join('|'), 'gi');
+  const match = regexp.exec(variant);
+  let flavor = null;
+  let buildType = variant;
+  if (match) {
+    flavor = variant.substring(0, match.index);
+    buildType = variant.substring(match.index);
+  }
+  return { buildType, flavor };
+}
+
+function isSeparateBuildEnabled(gradleFilePath) {
+  // Check if separate build enabled for different processors
+  const content = fs.readFileSync(gradleFilePath, 'utf8');
+  const separateBuild = content.match(/enableSeparateBuildPerCPUArchitecture\s+=\s+([\w]+)/)[1];
+  return separateBuild.toLowerCase() === 'true';
+}
+
+function getManifestFile(variant) {
+  // get the path to the correct manifest file to find the correct package name to be used while
+  // starting the app
+  const gradleFilePath = 'app/build.gradle';
+
+  // We first need to identify build type and flavor from the specified variant
+  const { buildType, flavor } = splitVariant(gradleFilePath, variant);
+
+  // Using the buildtype and flavor we create the path to the correct AndroidManifest.xml
+  const paths = ['app/build/intermediates/manifests/full'];
+  if (flavor) {
+    paths.push(flavor);
+  }
+
+  if (isSeparateBuildEnabled(gradleFilePath)) {
+      paths.push('x86');
+  }
+
+  paths.push(buildType);
+  paths.push('AndroidManifest.xml');
+  return paths.join('/');
+}
+
+function getActivityClass(args) {
+  // Get the complete path to the correct activity class depening upon the variant
+  const manifestFile = getManifestFile(args.variant || 'debug');
+  const content = fs.readFileSync(manifestFile, 'utf8');
+
+  //Find the correct package name from the manifest file
+  const packageName = content.match(/package="(.+?)"/)[1];
+
+  //Find the correct activityName from the manifestFile
+  const activityPathRegex = new RegExp(`android:name="(.+?\.${args.mainActivity})"`);
+  const activityPath = content.match(activityPathRegex)[1];
+  return `${packageName}/${activityPath}`;
+}
+
 
 module.exports = {
   name: 'run-android',
@@ -315,18 +386,6 @@ module.exports = {
   }, {
     command: '--variant [string]',
   }, {
-    command: '--appFolder [string]',
-    description: 'Specify a different application folder name for the android source.',
-    default: 'app',
-  }, {
-    command: '--appId [string]',
-    description: 'Specify an applicationId to launch after build.',
-    default: '',
-  }, {
-    command: '--appIdSuffix [string]',
-    description: 'Specify an applicationIdSuffix to launch after build.',
-    default: '',
-  }, {
     command: '--main-activity [string]',
     description: 'Name of the activity to start',
     default: 'MainActivity',
@@ -337,9 +396,5 @@ module.exports = {
   }, {
     command: '--no-packager',
     description: 'Do not launch packager while building',
-  }, {
-    command: '--port [number]',
-    default: process.env.RCT_METRO_PORT || 8081,
-    parse: (val: string) => Number(val),
   }],
 };
